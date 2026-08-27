@@ -13,10 +13,10 @@ def absmax_quantize_activations(x, num_bits=8, eps=1e-8):
     q_b = (2 ** (num_bits - 1)) - 1
     abs_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].clamp(min=eps)
     scale_x = q_b / abs_max
-    
+
     x_scaled = x * scale_x
     x_rounded = torch.clamp(torch.round(x_scaled), min=-q_b, max=q_b)
-    
+
     # Straight-Through Estimator (STE) for backprop
     x_quant = (x_rounded - x_scaled).detach() + x_scaled
     return x_quant, scale_x
@@ -26,7 +26,7 @@ def absmean_quantize_weights(weights, eps=1e-8):
     scale_w = 1.0 / (weights.abs().mean().clamp(min=eps))
     w_scaled = weights * scale_w
     w_rounded = torch.clamp(torch.round(w_scaled), min=-1.0, max=1.0)
-    
+
     # Straight-Through Estimator (STE) for backprop
     w_quant = (w_rounded - w_scaled).detach() + w_scaled
     return w_quant, scale_w
@@ -40,7 +40,7 @@ class TEFaaS_HadamardLayer_INT8(nn.Module):
     def __init__(self, size):
         super().__init__()
         assert (size & (size - 1) == 0) and size != 0, "Size must be a power of 2"
-        
+
         hadamard_matrix = scipy.linalg.hadamard(size)
         self.register_buffer("hadamard_matrix", torch.tensor(hadamard_matrix, dtype=torch.float32))
         self.raw_weights = nn.Parameter(torch.randn(size, dtype=torch.float32))
@@ -48,12 +48,12 @@ class TEFaaS_HadamardLayer_INT8(nn.Module):
     def forward(self, x):
         x_quant, scale_x = absmax_quantize_activations(x, num_bits=8)
         w_quant, scale_w = absmean_quantize_weights(self.raw_weights)
-        
+
         # Spatial -> Sequency -> Filter -> Spatial
         x_sequency = torch.matmul(x_quant, self.hadamard_matrix)
         filtered_x = x_sequency * w_quant
         out_quantized = torch.matmul(filtered_x, self.hadamard_matrix) / self.hadamard_matrix.size(0)
-        
+
         # Dequantize back to continuous space
         return out_quantized / (scale_x * scale_w)
 
@@ -85,25 +85,21 @@ class TernarySwiGLU(nn.Module):
     """Feed-Forward Network using gated SiLU activation."""
     def __init__(self, dim, hidden_dim):
         super().__init__()
-        self.w1 = TernaryLinear(dim, hidden_dim) 
-        self.w2 = TernaryLinear(dim, hidden_dim) 
-        self.w3 = TernaryLinear(hidden_dim, dim) 
+        self.w1 = TernaryLinear(dim, hidden_dim)
+        self.w2 = TernaryLinear(dim, hidden_dim)
+        self.w3 = TernaryLinear(hidden_dim, dim)
 
     def forward(self, x):
-        gate = F.silu(self.w1(x)) 
+        gate = F.silu(self.w1(x))
         value = self.w2(x)
         return self.w3(gate * value)
 
-# ==========================================
-# 3. COMPLETE TEFAAS BLOCK
-# ==========================================
-
-class TEFaaS_PhysicsBlock(nn.Module):
+# ========================================== # 3. COMPLETE TEFAAS BLOCK # ========================================== class TEFaaS_PhysicsBlock(nn.Module):
     """The unified architectural unit for sub-bit physics simulation."""
     def __init__(self, dim, hidden_dim):
         super().__init__()
         self.norm1 = SubLN_RMSNorm(dim)
-        self.spatial_mixer = TEFaaS_HadamardLayer_INT8(size=dim) 
+        self.spatial_mixer = TEFaaS_HadamardLayer_INT8(size=dim)
         self.norm2 = SubLN_RMSNorm(dim)
         self.channel_mixer = TernarySwiGLU(dim, hidden_dim)
 
@@ -113,40 +109,39 @@ class TEFaaS_PhysicsBlock(nn.Module):
         x = self.norm1(x)
         x = self.spatial_mixer(x)
         x = x + residual
-        
+
         # Channel Mixing with residual bypass
         residual = x
         x = self.norm2(x)
         x = self.channel_mixer(x)
         x = x + residual
-        
+
         return x
 
-# ==========================================
-# 4. EXECUTION DEMO
-# ==========================================
-
-if __name__ == "__main__":
+# ========================================== # 4. EXECUTION DEMO # ========================================== if __name__ == "__main__":
     # Settings: Dimension size must be a power of 2 for Hadamard matrix
     dim_size = 64
     expansion_factor = 4
     batch_size = 4
-    
-    print("--- TEFaaS Sub-Bit Physics Block Demo ---\\n")
-    
+
+    print("--- TEFaaS Sub-Bit Physics Block Demo ---
+")
+
     # 1. Initialize the architecture
     print("Initializing TEFaaS block...")
     tefaas_block = TEFaaS_PhysicsBlock(dim=dim_size, hidden_dim=dim_size * expansion_factor)
-    
+
     # 2. Simulate incoming continuous data (e.g., cell voltages)
     print("Generating simulated continuous physics data...")
     continuous_input = torch.randn(batch_size, dim_size)
-    
+
     # 3. Run the forward pass
-    print("Processing through quantized architecture...\\n")
+    print("Processing through quantized architecture...
+")
     output = tefaas_block(continuous_input)
-    
+
     # 4. Display Results
     print(f"Input Data Shape:  {continuous_input.shape}")
     print(f"Output Data Shape: {output.shape}")
-    print("\\nCheck complete: Data successfully routed through Ternary Hadamard layer and SwiGLU gating.")
+    print("
+Check complete: Data successfully routed through Ternary Hadamard layer and SwiGLU gating.")
